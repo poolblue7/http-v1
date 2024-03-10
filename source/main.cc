@@ -11,7 +11,8 @@ int main(){
     while(buf.ReadAbleSize()>0){
       
         std::string tmp=buf.GetLineAndPop();
-        std::cout<<tmp<<std::endl;
+        //std::cout<<tmp<<std::endl;
+       INF_LOG("hello");
     }
    /*
       std::string str("hello!");
