@@ -1,7 +1,8 @@
 #include <iostream>
 #include <vector>
-#include <cassert>
+#include <unordered_map>
 #include <string>
+#include <cassert>
 #include <cstring>
 #include <ctime>
 #include <functional>
@@ -297,11 +298,12 @@ class Socket {
         }
 };
 
-
+class Poller;
 class Channel
 {
 private:
     int _fd;
+    Poller * _poller;
     uint32_t _events;//当前需要监控的事件
     uint32_t _revents;// 当前连接触发的事件
     using EventCallback=std::function<void()>;
@@ -311,10 +313,10 @@ private:
     EventCallback _close_callback; //连接断开事件被触发的回调函数
     EventCallback _event_callback; //任意事件被触发的回调函数
 public:
-    Channel(int fd):_fd(fd),_events(0),_revents(0){}
+    Channel(Poller *poller ,int fd):_fd(fd),_events(0),_revents(0),_poller(poller){}
     int Fd(){return _fd;}
     uint32_t Events(){return _events;}//获取需要监控的事件
-    void SetRevents(uint32_t events){ _revents =_events;}
+    void SetRevents(uint32_t events){ _revents =_events;}//设置当前描述符就绪的事件
     void SetReadCallback(const EventCallback &cb){_read_callback=cb;}
     void SetWriteCallback(const EventCallback &cb){_write_callback=cb;}
     void SetErrorCallback(const EventCallback &cb){_error_callback=cb;}
@@ -340,15 +342,17 @@ public:
     //事件处理，一旦连接触发了事件就调用函数，触发什么事件由自己决定
     void HandleEvent(){
         if((_revents & EPOLLIN ) || (_revents & EPOLLRDHUP) || (_revents & EPOLLPRI) ){
-            if(_read_callback) _read_callback();
             /*不管任何事件，都调用的回调函数，事件处理完调用，刷新活跃度*/
             if (_event_callback) _event_callback();
+            if(_read_callback) _read_callback();
+            
         }
         //有可能会释放连接的操作时间，一次只出了一个
         if(_revents & EPOLLOUT){ 
-            if(_write_callback) _write_callback();
-            /*不管任何事件，都调用的回调函数，事件处理完调用，刷新活跃度*/
+             /*不管任何事件，都调用的回调函数，事件处理完调用，刷新活跃度*/
             if (_event_callback) _event_callback();
+            if(_write_callback) _write_callback();
+           
         }else if(_revents & EPOLLERR){
             //一旦出错，没必要调用任意回调，需要在前面调用任意回调
             if(_error_callback) _error_callback();
@@ -360,6 +364,84 @@ public:
 
 };
 
+#define MAX_EPOLLEVENTS 1024
+class Poller
+{
+private:
+    int _epfd;//epoll操作句柄
+    struct epoll_event _evs[MAX_EPOLLEVENTS];//监控时保存所有的活跃事件
+    std::unordered_map<int,Channel *> _channels;//hash管理描述符与描述符对应的事件管理channel对象
+private:
+    //对epoll的直接操作
+    void Update(Channel *channel ,int op){
+       // int epoll_ctl(int epfd,int op,int fd,struct epoll_event *ev)
+       int fd=channel->Fd();
+       struct epoll_event ev;
+       ev.data.fd=fd;
+       ev.events=channel->Events();
+       int ret=epoll_ctl(_epfd,op,fd,&ev);
+       if(ret < 0){
+        ERR_LOG("EPOLLCTL FAILED!!");
 
+       }
+       return;
+    }
+    //判断一个channel是否已经添加了监控
+    bool HasChannel(Channel *channel){
+        auto it=_channels.find(channel->Fd());
+        if(it == _channels.end()){
+            return false;
+        }
+        return true;
+    }
+public:
+    Poller(){
+        _epfd=epoll_create(MAX_EPOLLEVENTS);
+        if(_epfd <0 ){
+            ERR_LOG("EPOLL CREATE FAILED!!");\
+            abort();//退出程序
+        }
+    }
+    //添加或修改监控事件
+    void UpdateEvent(Channel *channel){
+        bool ret=HasChannel(channel);
+        if(ret ==false){
+             //若找不到，则添加监控
+            _channels.insert(std::make_pair(channel->Fd(),channel));
+            return Update(channel,EPOLL_CTL_ADD);
+        }
+        return Update(channel,EPOLL_CTL_MOD);
+    }
+    //移除监控
+    void RemovrEvent(Channel *channel){
+        auto it=_channels.find(channel->Fd());
+        if(it != _channels.end()){
+            _channels.erase(it);
+        }
+      Update(channel,EPOLL_CTL_DEL);
+    }
+    //开始监控，返回活跃连接
+    void Poll(std::vector<Channel*> *active){
+        //int epoll_wait(int epfd,struct epoll_event *evs,int maxevents,int timeout)
+        int nfds =epoll_wait(_epfd,_evs,MAX_EPOLLEVENTS,-1);
+        if(nfds <0){
+          if(errno==EINTR){
+            return;
+          }
+           ERR_LOG("EPOLL WAIT ERROR:%s\n",strerror(errno));
+           abort();//退出程序
+        }
 
+        for(int i=0;i<nfds;i++){
+            auto it =_channels.find(_evs[i].data.fd);
+            assert(it != _channels.end());
+            it->second->SetRevents(_evs[i].events);//设置实际就绪事件
+            active->push_back(it->second);
+        }
+        return;
+    }
+   
+};
+void Channel::Remove(){ return _poller->RemovrEvent(this);}
+void Channel::Update(){ return _poller->UpdateEvent(this);}
 
