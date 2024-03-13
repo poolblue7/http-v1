@@ -6,12 +6,16 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <memory>
 #include <unistd.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/fcntl.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <mutex>
+#include <thread>
 
 #define INF 0
 #define DBG 1
@@ -297,13 +301,14 @@ class Socket {
             fcntl(_sockfd, F_SETFL, flag | O_NONBLOCK);
         }
 };
-
+class EventLoop;
 class Poller;
 class Channel
 {
 private:
     int _fd;
-    Poller * _poller;
+    //EventLoop * _loop;
+    Poller * _loop;
     uint32_t _events;//当前需要监控的事件
     uint32_t _revents;// 当前连接触发的事件
     using EventCallback=std::function<void()>;
@@ -313,29 +318,29 @@ private:
     EventCallback _close_callback; //连接断开事件被触发的回调函数
     EventCallback _event_callback; //任意事件被触发的回调函数
 public:
-    Channel(Poller *poller ,int fd):_fd(fd),_events(0),_revents(0),_poller(poller){}
+    Channel(Poller *loop ,int fd):_fd(fd),_events(0),_revents(0),_loop(loop){}
     int Fd(){return _fd;}
     uint32_t Events(){return _events;}//获取需要监控的事件
-    void SetRevents(uint32_t events){ _revents =_events;}//设置当前描述符就绪的事件
+    void SetREvents(uint32_t events){ _revents =_events;}//设置当前描述符就绪的事件
     void SetReadCallback(const EventCallback &cb){_read_callback=cb;}
     void SetWriteCallback(const EventCallback &cb){_write_callback=cb;}
     void SetErrorCallback(const EventCallback &cb){_error_callback=cb;}
     void SetCloseCallback(const EventCallback &cb){_close_callback=cb;}
     void SetEventCallback(const EventCallback &cb){_event_callback=cb;}
     //当前是否监控了可读
-    bool ReadAble(){return (_events & EPOLLIN);}
+    bool ReadAble() { return (_events & EPOLLIN); } 
     //当前是否监控了可写
-    bool WriteAble(){return(_events & EPOLLOUT);}
+    bool WriteAble() { return (_events & EPOLLOUT); }
     //启动读事件监控
-    void EnableRead(){_events |= EPOLLIN;Update();}
+    void EnableRead() { _events |= EPOLLIN; Update(); }
     //启动写事件监控
-    void EnableWrite(){_events |= EPOLLOUT;Update();}
+    void EnableWrite() { _events |= EPOLLOUT; Update(); }
     //关闭读事件监控
-    void DisableRead(){_events &= ~EPOLLIN;Update();}
+    void DisableRead() { _events &= ~EPOLLIN; Update(); }
     //关闭写事件监控
-    void DisableWrite(){_events &= ~EPOLLOUT;Update();}
+    void DisableWrite() { _events &= ~EPOLLOUT; Update(); }
     //关闭所有事件监控
-    void DisableAll(){_events =0;Update();}
+    void DisableAll() { _events = 0; Update(); }
     //移除监控
     void Remove();
     void Update();
@@ -347,7 +352,7 @@ public:
             if(_read_callback) _read_callback();
             
         }
-        //有可能会释放连接的操作时间，一次只出了一个
+        //有可能会释放连接的操作时间，一次只处理一个
         if(_revents & EPOLLOUT){ 
              /*不管任何事件，都调用的回调函数，事件处理完调用，刷新活跃度*/
             if (_event_callback) _event_callback();
@@ -355,8 +360,10 @@ public:
            
         }else if(_revents & EPOLLERR){
             //一旦出错，没必要调用任意回调，需要在前面调用任意回调
+            if (_event_callback) _event_callback();
             if(_error_callback) _error_callback();
         }else if(_revents & EPOLLHUP){
+            if (_event_callback) _event_callback();
             if(_close_callback) _close_callback();
         }
          
@@ -365,83 +372,147 @@ public:
 };
 
 #define MAX_EPOLLEVENTS 1024
-class Poller
-{
-private:
-    int _epfd;//epoll操作句柄
-    struct epoll_event _evs[MAX_EPOLLEVENTS];//监控时保存所有的活跃事件
-    std::unordered_map<int,Channel *> _channels;//hash管理描述符与描述符对应的事件管理channel对象
-private:
-    //对epoll的直接操作
-    void Update(Channel *channel ,int op){
-       // int epoll_ctl(int epfd,int op,int fd,struct epoll_event *ev)
-       int fd=channel->Fd();
-       struct epoll_event ev;
-       ev.data.fd=fd;
-       ev.events=channel->Events();
-       int ret=epoll_ctl(_epfd,op,fd,&ev);
-       if(ret < 0){
-        ERR_LOG("EPOLLCTL FAILED!!");
-
-       }
-       return;
-    }
-    //判断一个channel是否已经添加了监控
-    bool HasChannel(Channel *channel){
-        auto it=_channels.find(channel->Fd());
-        if(it == _channels.end()){
-            return false;
-        }
-        return true;
-    }
-public:
-    Poller(){
-        _epfd=epoll_create(MAX_EPOLLEVENTS);
-        if(_epfd <0 ){
-            ERR_LOG("EPOLL CREATE FAILED!!");\
-            abort();//退出程序
-        }
-    }
-    //添加或修改监控事件
-    void UpdateEvent(Channel *channel){
-        bool ret=HasChannel(channel);
-        if(ret ==false){
-             //若找不到，则添加监控
-            _channels.insert(std::make_pair(channel->Fd(),channel));
-            return Update(channel,EPOLL_CTL_ADD);
-        }
-        return Update(channel,EPOLL_CTL_MOD);
-    }
-    //移除监控
-    void RemovrEvent(Channel *channel){
-        auto it=_channels.find(channel->Fd());
-        if(it != _channels.end()){
-            _channels.erase(it);
-        }
-      Update(channel,EPOLL_CTL_DEL);
-    }
-    //开始监控，返回活跃连接
-    void Poll(std::vector<Channel*> *active){
-        //int epoll_wait(int epfd,struct epoll_event *evs,int maxevents,int timeout)
-        int nfds =epoll_wait(_epfd,_evs,MAX_EPOLLEVENTS,-1);
-        if(nfds <0){
-          if(errno==EINTR){
+class Poller {
+    private:
+        int _epfd;
+        struct epoll_event _evs[MAX_EPOLLEVENTS];
+        std::unordered_map<int, Channel *> _channels;
+    private:
+        //对epoll的直接操作
+        void Update(Channel *channel, int op) {
+            // int epoll_ctl(int epfd, int op,  int fd,  struct epoll_event *ev);
+            int fd = channel->Fd();
+            struct epoll_event ev;
+            ev.data.fd = fd;
+            ev.events = channel->Events();
+            int ret = epoll_ctl(_epfd, op, fd, &ev);
+            if (ret < 0) {
+                ERR_LOG("EPOLLCTL FAILED!");
+            }
             return;
-          }
-           ERR_LOG("EPOLL WAIT ERROR:%s\n",strerror(errno));
-           abort();//退出程序
         }
-
-        for(int i=0;i<nfds;i++){
-            auto it =_channels.find(_evs[i].data.fd);
-            assert(it != _channels.end());
-            it->second->SetRevents(_evs[i].events);//设置实际就绪事件
-            active->push_back(it->second);
+        //判断一个Channel是否已经添加了事件监控
+        bool HasChannel(Channel *channel) {
+            auto it = _channels.find(channel->Fd());
+            if (it == _channels.end()) {
+                return false;
+            }
+            return true;
         }
-        return;
-    }
-   
+    public:
+        Poller() {
+            _epfd = epoll_create(MAX_EPOLLEVENTS);
+            if (_epfd < 0) {
+                ERR_LOG("EPOLL CREATE FAILED!!");
+                abort();//退出程序
+            }
+        }
+        //添加或修改监控事件
+        void UpdateEvent(Channel *channel) {
+            bool ret = HasChannel(channel);
+            if (ret == false) {
+                //不存在则添加
+                _channels.insert(std::make_pair(channel->Fd(), channel));
+                return Update(channel, EPOLL_CTL_ADD);
+            }
+            return Update(channel, EPOLL_CTL_MOD);
+        }
+        //移除监控
+        void RemoveEvent(Channel *channel) {
+            auto it = _channels.find(channel->Fd());
+            if (it != _channels.end()) {
+                _channels.erase(it);
+            }
+            Update(channel, EPOLL_CTL_DEL);
+        }
+        //开始监控，返回活跃连接
+        void Poll(std::vector<Channel*> *active) {
+            // int epoll_wait(int epfd, struct epoll_event *evs, int maxevents, int timeout)
+            int nfds = epoll_wait(_epfd, _evs, MAX_EPOLLEVENTS, -1);
+            if (nfds < 0) {
+                if (errno == EINTR) {
+                    return ;
+                }
+                ERR_LOG("EPOLL WAIT ERROR:%s\n", strerror(errno));
+                abort();//退出程序
+            }
+            for (int i = 0; i < nfds; i++) {
+                auto it = _channels.find(_evs[i].data.fd);
+                assert(it != _channels.end());
+                it->second->SetREvents(_evs[i].events);//设置实际就绪的事件
+                active->push_back(it->second);
+            }
+            return;
+        }
 };
-void Channel::Remove(){ return _poller->RemovrEvent(this);}
-void Channel::Update(){ return _poller->UpdateEvent(this);}
+void Channel::Remove(){ return _loop->RemoveEvent(this);}
+void Channel::Update(){ return _loop->UpdateEvent(this);}
+
+// class EventLoop
+// {
+// private:
+//     using Functor=std::function<void>;
+//     std::thread::id _thread_id;             //线程 id
+//     int _event_fd;              //eventfd唤醒IO事件监控可能导致的阻塞
+//     std::unique_ptr<Channel> _event_channel;//管理event的事件
+//     Poller _poller;             //进行所有描述符的事件监控
+//     std::vector<Functor> _task; //任务池
+//     std::mutex _mutex;         //实现任务池操作的线程安全
+// public:
+//     //执行任务池的所有任务
+//     void RunAllTask(){
+
+//     }
+//     static int  CreateEventFd(){
+        
+//     }
+//     void ReadEventFd(){
+
+//     }
+// public:
+//     EventLoop():_thread_id(std::this_thread::get_id()),
+//                 _event_fd(CreateEventFd()),
+//                 _event_channel(new Channel(this,_event_fd)){
+//                //设置eventfd可读事件的回调函数，读取eventfd事件通知次数
+//                 _event_channel->SetReadCallback(std::bind(&EventLoop::ReadEventFd,this));
+//                //启动eventfd的读事件监控
+//                _event_channel->EnableRead();
+//                 }
+//     //启动，三步走: 1.启动事件监控，2.事件就绪处理 3.执行任务
+//     void Start(){
+//          //1.启动事件监控，
+//          Poller poller(_poller);
+//          std::vector<Channel *> actives;
+//          poller.Poll(&actives);
+    
+//         // 2.事件就绪处理 
+//         for(auto & channel :actives){
+//             channel->HandleEvent();
+//         }
+//         //3.执行任务
+//         RunAllTask();
+//     }
+//     //判断当前线程是否为EventLoop对应的线程
+//     bool IsInloop(){
+//          if(_)
+//     }
+//     //判断任务是否为该线程，是则执行，不是则放入任务池
+//     void RunInLoop(){
+
+//     }
+//     //将任务压入任务池
+//     void QueueInLoop(const Functor &cb){
+
+//     }
+//     //添加/修改事件监控
+//     void UpdateEvent(Channel * channel){
+
+//     }
+//     //移除事件监控
+//     void RemoveEvent(Channel * channel){
+
+//     }
+// };
+
+
 
