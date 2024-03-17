@@ -17,6 +17,7 @@
 #include <sys/eventfd.h>
 #include <sys/timerfd.h>
 #include <mutex>
+#include <condition_variable>
 #include <thread>
 
 #define INF 0
@@ -601,19 +602,15 @@ private:
     std::unique_ptr<Channel> _timer_channel; // 管理定时器的事件
 
 private:
-    void RemoveTimer(uint64_t id)
-    {
+    void RemoveTimer(uint64_t id){
         auto it = _timers.find(id);
-        if (it != _timers.end())
-        {
+        if (it != _timers.end()){
             _timers.erase(it);
         }
     }
-    static int CreateTimerfd()
-    {
+    static int CreateTimerfd(){
         int timerfd = timerfd_create(CLOCK_MONOTONIC, 0);
-        if (timerfd < 0)
-        {
+        if (timerfd < 0){
             ERR_LOG("TIMERFD CREATE FAILED!");
             abort();
         }
@@ -626,27 +623,22 @@ private:
         timerfd_settime(timerfd, 0, &itime, NULL);
         return timerfd;
     }
-    int ReadTimefd()
-    {
+    int ReadTimefd(){
         uint64_t times;
         int ret = read(_timerfd, &times, 8);
-        if (ret < 0)
-        {
+        if (ret < 0){
             ERR_LOG("READ TIMERFD FAILED!!");
             abort();
         }
         return times;
     }
-    void OnTime()
-    {
+    void OnTime(){
         int times = ReadTimefd();
-        for (int i = 0; i < times; i++)
-        {
+        for (int i = 0; i < times; i++){
             RunTimerTask();
         }
     }
-    void TimerAddInLoop(uint64_t id, uint32_t delay, const TaskFunc &cb)
-    {
+    void TimerAddInLoop(uint64_t id, uint32_t delay, const TaskFunc &cb){
         PtrTask pt(new TimerTask(id, delay, cb));
         pt->SetRelease(std::bind(&TimerWheel::RemoveTimer, this, id));
         int pos = (_tick + delay) % _capacity;
@@ -654,12 +646,10 @@ private:
         _timers[id] = WeakTask(pt);
     }
     // 刷新/延迟定时任务
-    void TimerRefreshInLoop(uint64_t id)
-    {
+    void TimerRefreshInLoop(uint64_t id){
         // 通过保存的定时器对象的weak_ptr构造一个shared_ptr出来，添加到轮子中
         auto it = _timers.find(id);
-        if (it == _timers.end())
-        {
+        if (it == _timers.end()){
             return; // 没找着定时任务，没法刷新，没法延迟
         }
         PtrTask pt = it->second.lock(); // lock获取weak_ptr管理的对象对应的shared_ptr
@@ -667,11 +657,9 @@ private:
         int pos = (_tick + delay) % _capacity;
         _wheel[pos].push_back(pt);
     }
-    void TimerCancelInLoop(uint64_t id)
-    {
+    void TimerCancelInLoop(uint64_t id){
         auto it = _timers.find(id);
-        if (it == _timers.end())
-        {
+        if (it == _timers.end()){
             return; // 没找着定时任务，没法刷新，没法延迟
         }
         PtrTask pt = it->second.lock();
@@ -686,8 +674,7 @@ public:
         _timer_channel->EnableRead(); // 启动可读事件监控
     }
     // 这个函数应该每秒钟被执行一次，相当于秒针向后走了一步
-    void RunTimerTask()
-    {
+    void RunTimerTask(){
         _tick = (_tick + 1) % _capacity;
         _wheel[_tick].clear(); // 清空指定位置的数组，就会把数组中保存的所有管理定时器对象的shared_ptr释放掉
     }
@@ -697,11 +684,9 @@ public:
 
     void TimerCancel(uint64_t id);
 
-    bool HasTimer(uint64_t id)
-    {
+    bool HasTimer(uint64_t id){
         auto it = _timers.find(id);
-        if (it == _timers.end())
-        {
+        if (it == _timers.end()){
             return false;
         }
         return true;
@@ -720,21 +705,18 @@ private:
     TimerWheel _timer_wheel;                 // 时间定时器
 public:
     // 执行任务池的所有任务
-    void RunAllTask()
-    {
+    void RunAllTask(){
         std::vector<Functor> functor;
         {
             std::unique_lock<std::mutex> _lock(_mutex);
             _tasks.swap(functor);
         }
-        for (auto &f : functor)
-        {
+        for (auto &f : functor){
             f();
         }
         return;
     }
-    static int CreateEventFd()
-    {
+    static int CreateEventFd(){
         int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
         if (efd < 0)
         {
@@ -743,12 +725,10 @@ public:
         }
         return efd;
     }
-    void ReadEventFd()
-    {
+    void ReadEventFd(){
         uint64_t res = 0;
         int ret = read(_event_fd, &res, sizeof(res));
-        if (ret < 0)
-        {
+        if (ret < 0){
             // EINTR -- 被信号打断；   EAGAIN -- 表示无数据可读
             if (errno == EINTR || errno == EAGAIN)
             {
@@ -763,10 +743,8 @@ public:
     {
         uint64_t val = 1;
         int ret = write(_event_fd, &val, sizeof(val));
-        if (ret < 0)
-        {
-            if (errno == EINTR)
-            {
+        if (ret < 0){
+            if (errno == EINTR){
                 return;
             }
             ERR_LOG("READ EVENTFD FAILED!");
@@ -779,16 +757,15 @@ public:
     EventLoop() : _thread_id(std::this_thread::get_id()),
                   _event_fd(CreateEventFd()),
                   _event_channel(new Channel(this, _event_fd)),
-                  _timer_wheel(this)
-    {
+                  _timer_wheel(this){
         // 设置eventfd可读事件的回调函数，读取eventfd事件通知次数
         _event_channel->SetReadCallback(std::bind(&EventLoop::ReadEventFd, this));
         // 启动eventfd的读事件监控
         _event_channel->EnableRead();
     }
     // 启动，三步走: 1.启动事件监控，2.事件就绪处理 3.执行任务
-    void Start()
-    {
+    void Start(){   
+        while(1){
         // 1.启动事件监控，
         Poller poller(_poller);
         std::vector<Channel *> actives;
@@ -801,6 +778,8 @@ public:
         }
         // 3.执行任务
         RunAllTask();
+        }
+    
     }
     // 判断当前线程是否为EventLoop对应的线程
     bool IsInLoop(){
@@ -837,7 +816,68 @@ public:
     void TimerCancel(uint64_t id) { return _timer_wheel.TimerCancel(id); }
     bool HasTimer(uint64_t id) { return _timer_wheel.HasTimer(id); }
 };
+class LoopThread{
+  private:
+       //用于实现_loop的对应关系，避免线程创建了，但是_loop没有实例化就去获取_loop
+       std::mutex _mutex; //互斥锁
+       std::condition_variable _cond; //条件变量
+       EventLoop *_loop;//Eventloop类型指针，对象需要在线程内实例化
+       std::thread _thread;//EventLoop对应的线程
+  private:
+      //实例化Enventloop,唤醒cond上的可能阻塞的线程，运行EventLoop模块的功能
+      void ThreadEntry(){
+          EventLoop loop;
+         {
+            std::unique_lock<std::mutex> lock(_mutex);//加锁
+            _loop=&loop;
+            _cond.notify_all();//唤醒可能阻塞的线程
+         }
+         loop.Start();
+      }
+  public:
+      //创建线程，设置线程入口函数
+      LoopThread():_thread(std::thread(&LoopThread::ThreadEntry,this)){}
+      EventLoop *GetLoop(){
+        EventLoop *loop=NULL;
+         {
+            std::unique_lock<std::mutex> lock(_mutex);//加锁
+            _cond.wait(lock,[&](){return _loop!=NULL;});
+            loop=_loop;
+         }
+         return loop;
+      }
+};
+class LoopThreadPool{
+    
+    private:
+        int _thread_count;    //从属线程数量
+        int _next_idx;        //从属EventLoop索引
+        EventLoop *_base_loop;//主EventLoop,运行在主线程，当从属线程数量为0时，则所有操作都在baseloopz中进行
+        std::vector<LoopThread *> _threads;//线程池，保存所有的LoopThread对象
+        std::vector<EventLoop *>  _loops; //从属线程数量大于0则从_loops中进行线程Eventloop分配
 
+    public:
+    LoopThreadPool(EventLoop * base_loop):_thread_count(0),_next_idx(2),_base_loop(base_loop){}
+    void SetThreadCount(int thread_count){_thread_count=thread_count;}
+    //创建从属线程
+    void Create(){
+       if(_thread_count>0){
+          _threads.resize(_thread_count);
+          _loops.resize(_thread_count);
+          for(int i=0;i<_thread_count;i++){
+            _threads[i]=new LoopThread();
+            _loops[i]=_threads[i]->GetLoop();
+          }
+       }
+       return;
+        
+    }
+    EventLoop *NextLoop() {
+       if(_thread_count==0){return _base_loop;}
+        _next_idx = (_next_idx + 1) % _thread_count;
+            return _loops[_next_idx];
+    }
+};
 class Any
 {
 private:
