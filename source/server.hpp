@@ -1,3 +1,5 @@
+#ifndef __M_SERVER_H__
+#define __M_SERVER_H__
 #include <iostream>
 #include <vector>
 #include <string>
@@ -1226,7 +1228,8 @@ private:
     Acceptor _acceptor;                                 //这是监听套接字的管理对象
     std::unordered_map<uint64_t,PtrConnection> _conns;  //管理新连接的share_ptr对象
     LoopThreadPool _pool;                               //这是从属EventLoop线程池
-
+    
+    //各种回调函数
     using ConnectedCallback = std::function<void(const PtrConnection &)>;
     using MessageCallback = std::function<void(const PtrConnection &, Buffer *)>;
     using ClosedCallback = std::function<void(const PtrConnection &)>;
@@ -1312,3 +1315,4 @@ class NetWork{
 };
 
 static NetWork nw;
+#endif
