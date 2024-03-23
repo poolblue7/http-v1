@@ -169,7 +169,7 @@ public:
         static bool ReadFile(const std::string &filename, std::string *buf){
            std::ifstream ifs(filename,std::ios::binary);
            if(ifs.is_open()==false){
-              ERR_LOG("OPEN %s FILE FAILED!!",filename);
+              ERR_LOG("OPEN %s FILE FAILED!!",filename.c_str());
               return false;
            }
           size_t fsize=0;
@@ -179,7 +179,7 @@ public:
           buf->resize(fsize);
           ifs.read(&(*buf)[0],fsize);
           if(ifs.good()==false){
-            ERR_LOG("READ %s FILE FAILED!!",filename);
+            ERR_LOG("READ %s FILE FAILED!!",filename.c_str());
             ifs.close();
             return false;
           }
@@ -190,12 +190,12 @@ public:
         static bool WriteFile(const std::string &filename, const std::string &buf){
              std::ofstream ofs(filename,std::ios::binary | std::ios::trunc);
              if(ofs.is_open()==false){
-              ERR_LOG("OPEN %s FILE FAILED!!",filename);
+              ERR_LOG("OPEN %s FILE FAILED!!",filename.c_str());
               return false;
            }
            ofs.write(&(buf)[0],buf.size());
            if(ofs.good()==false){
-            ERR_LOG("WRITE %s FILE FAILED!!",filename);
+            ERR_LOG("WRITE %s FILE FAILED!!",filename.c_str());
             ofs.close();
             return false;
           }
@@ -210,7 +210,7 @@ public:
         static std::string UrlEncode(const std::string& url, bool convert_space_to_plus){
               std::string res;
               for(auto &c : url ){
-                 if(c == '.' || c == '- ' || c=='_' || c=='~' ){
+                if (c == '.' || c == '-' || c == '_' || c == '~' || isalnum(c)) {
                    res+=c;
                    continue;
                  }
@@ -345,7 +345,7 @@ class HttpRequest {
    std::string GetHeader(const std::string &key)const{
       auto it =_headers.find(key);
       if(it==_headers.end()){
-       return false;
+       return "";
       }
       return it->second;
    }
@@ -365,7 +365,7 @@ class HttpRequest {
    std::string GetParam(const std::string &key)const{
      auto it =_params.find(key);
       if(it==_params.end()){
-       return false;
+       return "";
       }
       return it->second;
    }
@@ -390,5 +390,50 @@ class HttpRequest {
 };
 class HttpResponse {
   public:
+      int _statu;
+      bool _redirect_flag;
+      std::string _body;
+      std::string _redirect_url;
+      std::unordered_map<std::string ,std::string > _headers;
+      
   public:
+      HttpResponse():_statu(200),_redirect_flag(false){}
+      HttpResponse(int statu):_redirect_flag(false), _statu(statu) {} 
+       //插入头部字段
+       void SetHeader(const std::string &key,const std::string & val){
+         _headers.insert(std::make_pair(key,val));
+      }
+       //判断是否存在指定头部字段
+      bool HasHeader(const std::string &key)const{
+          auto it =_headers.find(key);
+           if(it==_headers.end()){
+           return false;
+       }
+       return true;
+    }
+      //获取指定头部字段的值
+      std::string GetHeader(const std::string &key)const{
+          auto it =_headers.find(key);
+            if(it==_headers.end()){
+             return "";
+      }
+         return it->second;
+    }
+     void SetContent(const std::string &body,const std::string & type = "text/html"){
+          _body=body;
+          SetHeader("Content-Type", type);
+      }
+      void SetRedirect(const std::string &url, int statu = 302) {
+            _statu = statu;
+            _redirect_flag = true;
+            _redirect_url = url;
+        }
+      //判断是否是短链接
+       bool Close() const {
+         // 没有Connection字段，或者有Connection但是值是close，则都是短链接，否则就是长连接
+         if(HasHeader("Connection")== true && GetHeader("Connection")=="keep-alive"){
+            return false;
+        }
+       return true;
+    }
 };
