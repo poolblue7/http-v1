@@ -437,3 +437,48 @@ class HttpResponse {
        return true;
     }
 };
+typedef enum{
+ RECV_HTTP_ERROR,
+ RECV_HTTP_LINE,
+ RECV_HTTP_HEAD,
+ RECV_HTTP_BODY,
+ RECV_HTTP_OVER
+}HttpRecvStatu;
+#define MAX_LINE 8192
+class  HttpContext
+{
+private:
+  int _resp_statu;              //响应状态码
+  HttpRecvStatu _recv_statu;   //当前接受及解析的阶段状态
+  HttpRequest _request;        //当前已经解析到的请求信息
+private:
+  bool ParseHttpLine(const std::string &line){
+
+  }
+  bool RecvHttpLine(Buffer *buf){
+
+  }
+  bool ParseHttpHead(const std::string &line){
+
+  }
+  bool RecvHttpHead(Buffer *buf){
+
+  }
+  bool RecvHttpBody(Buffer *buf){
+
+  }
+public:
+  HttpContext();
+  int RespStatu(){
+
+  }
+  HttpRecvStatu RecvStatu(){
+
+  }
+  //接收并解析HTTP请求
+  void RecvHttpRequest(Buffer *buf){
+
+  }
+    
+};
+
