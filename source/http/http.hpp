@@ -453,7 +453,32 @@ private:
   HttpRequest _request;        //当前已经解析到的请求信息
 private:
   bool ParseHttpLine(const std::string &line){
-
+      std::smatch matches;
+      std::regex e("(GET|HEAD|POST|PUT|DELETE) ([^?]*)(?:\\?(.*))? (HTTP/1\\.[01])(?:\n|\r\n)?", std::regex::icase);
+      bool ret = std::regex_match(line, matches, e);
+      if(ret ==false){
+         _recv_statu=RECV_HTTP_ERROR;
+         _resp_statu = 400;//BAD REQUEST
+         return false;         
+      }
+      //0 : GET /bitejiuyeke/login?user=xiaoming&pass=123123 HTTP/1.1
+      //1 : GET
+      //2 : /bitejiuyeke/login
+      //3 : user=xiaoming&pass=123123
+      //4 : HTTP/1.1
+      //请求方法的获取
+      _request._method=matches[1];
+      std::transform(_request._method.begin(), _request._method.end(), _request._method.begin(), ::toupper);
+      //资源路径的获取，需要进行URL解码操作，但是不需要+转空格
+      _request._path=Util::UrlDecode(matches[2],false);
+      //协议版本的获取
+      _request._version=matches[4];
+      //查询字符串的获取与处理
+      std::vector<std::string> query_string_arry;
+      std::string query_string = matches[3];
+      //查询字符串的格式 key=val&key=val....., 先以 & 符号进行分割，得到各个字串
+      
+      //针对各个字串，以 = 符号进行分割，得到key 和val， 得到之后也需要进行URL解码
   }
   bool RecvHttpLine(Buffer *buf){
 
