@@ -19,4 +19,4 @@ tcp_srv:tcp_srv.cc
 	g++ -g -std=c++11 -pthread $^ -o $@	
 .PHONY:clean
 clean:
-	rm -rf client1
+	rm -rf client
