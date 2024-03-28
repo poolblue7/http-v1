@@ -1,4 +1,4 @@
-all:client5
+all:client6
 client1:client1.cpp
 	g++ -g -std=c++11 $^ -o $@
 client2:client2.cpp
