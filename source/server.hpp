@@ -26,7 +26,7 @@
 #define INF 0
 #define DBG 1
 #define ERR 2
-#define LOG_LEVEL INF
+#define LOG_LEVEL DBG
 
 #define LOG(level, format, ...)                                                                                        \
     do                                                                                                                 \
@@ -439,38 +439,28 @@ public:
     {
         if ((_revents & EPOLLIN) || (_revents & EPOLLRDHUP) || (_revents & EPOLLPRI))
         {
-            /*不管任何事件，都调用的回调函数，事件处理完调用，刷新活跃度*/
-
-            if (_event_callback)
-                _event_callback();
             if (_read_callback)
                 _read_callback();
         }
         // 有可能会释放连接的操作时间，一次只处理一个
         if (_revents & EPOLLOUT)
         {
-
-            /*不管任何事件，都调用的回调函数，事件处理完调用，刷新活跃度*/
-            if (_event_callback)
-                _event_callback(); // 第二个有事件到来，是这个被执行了，证明_revents上的EPOLLOUT事件响应了，阻塞在了_write_callback回调上面
             if (_write_callback)
                 _write_callback();
         }
         else if (_revents & EPOLLERR)
         {
-            // 一旦出错，没必要调用任意回调，需要在前面调用任意回调
-            if (_event_callback)
-                _event_callback();
             if (_error_callback)
                 _error_callback();
         }
         else if (_revents & EPOLLHUP)
         {
-            if (_event_callback)
-                _event_callback();
             if (_close_callback)
                 _close_callback();
         }
+        /*不管任何事件，都调用的回调函数，事件处理完调用，刷新活跃度*/
+            if (_event_callback)
+             _event_callback();
     }
 };
 
@@ -627,6 +617,8 @@ private:
         return timerfd;
     }
     int ReadTimefd(){
+        //有可能因为其他描述符的事件处理花费事件比较长，然后在处理定时器描述符事件的时候，有可能就已经超时了很多次
+        //read读取到的数据times就是从上一次read之后超时的次数
         uint64_t times;
         int ret = read(_timerfd, &times, 8);
         if (ret < 0){
@@ -636,6 +628,7 @@ private:
         return times;
     }
     void OnTime(){
+        //根据实际超时的次数，执行对应的超时任务
         int times = ReadTimefd();
         for (int i = 0; i < times; i++){
             RunTimerTask();
